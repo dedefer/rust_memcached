@@ -16,8 +16,11 @@ impl Settings {
         let mut cfg = Config::new();
         cfg.merge(
             Environment::with_prefix("memcached")
-            .separator(".")
-        )?;
+        )?
+        .set_default("memory_limit", 1 << 20)?
+        .set_default("gc_interval", "100ms")?
+        .set_default("addr", "0.0.0.0:8080")?;
+
         cfg.try_into()
     }
 }

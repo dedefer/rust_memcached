@@ -1,4 +1,4 @@
-use std::thread::{spawn, sleep};
+use std::thread;
 use serde::{Serialize, Deserialize};
 use actix_web::{
     post, HttpResponse, Responder, Scope,
@@ -17,7 +17,7 @@ pub fn memcached(memory_limit: usize, gc_interval: Duration) -> Scope {
     ));
 
     let mc_for_gc = mc.clone();
-    spawn(move || gc(mc_for_gc, gc_interval));
+    thread::spawn(move || gc(mc_for_gc, gc_interval));
 
     scope("/")
         .app_data(Data::from(mc))
@@ -55,23 +55,18 @@ struct SetReq {
     ttl: Option<DurationString>,
 }
 
-#[derive(Serialize)]
-struct SetResp;
-
 #[post("/set")]
 async fn set(
     mc: Data<RwLock<Memcached>>,
     req: Json<SetReq>,
 ) -> impl Responder {
-    let data = req.data.clone().into_bytes();
-
     match mc.write().unwrap().set(
-        &req.key, &data,
-        req.ttl.map(|d| d.into()),
+        &req.key, req.data.as_bytes(),
+        req.ttl.map(Into::into),
     ) {
-        Some(_) => HttpResponse::Ok().json(SetResp{}),
-        None => HttpResponse::NotModified().finish(),
-    }
+        true => HttpResponse::Ok(),
+        false => HttpResponse::NotModified(),
+    }.finish()
 }
 
 #[derive(Deserialize)]
@@ -79,23 +74,20 @@ struct DeleteReq {
     key: String,
 }
 
-#[derive(Serialize)]
-struct DeleteResp;
-
 #[post("/delete")]
 async fn delete(
     mc: Data<RwLock<Memcached>>,
     req: Json<DeleteReq>,
 ) -> impl Responder {
     match mc.write().unwrap().delete(&req.key) {
-        Some(_) => HttpResponse::Ok().json(DeleteResp{}),
-        None => HttpResponse::NotFound().finish(),
-    }
+        true => HttpResponse::Ok(),
+        false => HttpResponse::NotFound(),
+    }.finish()
 }
 
 fn gc(mc: Arc<RwLock<Memcached>>, interval: Duration) {
     loop {
-        sleep(interval);
+        thread::sleep(interval);
         {
             let mut mc = mc.write().unwrap();
             mc.collect_garbage();
