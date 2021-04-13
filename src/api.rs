@@ -1,7 +1,8 @@
 use std::thread;
 use serde::{Serialize, Deserialize};
 use actix_web::{
-    post, HttpResponse, Responder, Scope,
+    post, HttpResponse as Code,
+    Responder, Scope,
     web::{Data, scope, Json},
 };
 use std::sync::{RwLock, Arc};
@@ -43,8 +44,8 @@ async fn get(
     req: Json<GetReq>,
 ) -> impl Responder {
     match mc.read().unwrap().get(&req.key) {
-        Some(data) => HttpResponse::Ok().json(GetResp { data: String::from_utf8(data).unwrap() }),
-        None => HttpResponse::NotFound().finish(),
+        Some(data) => Code::Ok().json(GetResp { data: as_string(data) }),
+        None => Code::NotFound().finish(),
     }
 }
 
@@ -64,8 +65,8 @@ async fn set(
         &req.key, req.data.as_bytes(),
         req.ttl.map(Into::into),
     ) {
-        true => HttpResponse::Ok(),
-        false => HttpResponse::NotModified(),
+        true => Code::Ok(),
+        false => Code::NotModified(),
     }.finish()
 }
 
@@ -74,15 +75,20 @@ struct DeleteReq {
     key: String,
 }
 
+#[derive(Serialize)]
+struct DeleteResp {
+    data: String,
+}
+
 #[post("/delete")]
 async fn delete(
     mc: Data<RwLock<Memcached>>,
     req: Json<DeleteReq>,
 ) -> impl Responder {
     match mc.write().unwrap().delete(&req.key) {
-        true => HttpResponse::Ok(),
-        false => HttpResponse::NotFound(),
-    }.finish()
+        Some(data) => Code::Ok().json(DeleteResp { data: as_string(data) }),
+        None => Code::NotFound().finish(),
+    }
 }
 
 fn gc(mc: Arc<RwLock<Memcached>>, interval: Duration) {
@@ -93,4 +99,8 @@ fn gc(mc: Arc<RwLock<Memcached>>, interval: Duration) {
             mc.collect_garbage();
         }
     }
+}
+
+fn as_string(vec: Vec<u8>) -> String {
+    String::from_utf8(vec).unwrap()
 }

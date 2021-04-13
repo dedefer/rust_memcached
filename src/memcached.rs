@@ -10,6 +10,7 @@ struct Item {
     data: Vec<u8>,
 }
 
+#[derive(Default)]
 pub struct Memcached {
     limit: usize,
     current_size: usize,
@@ -20,33 +21,21 @@ pub struct Memcached {
 
 impl Memcached {
     pub fn new(limit: usize) -> Memcached {
-        Memcached {
-            limit,
-            current_size: 0,
-            cache: HashMap::new(),
-            keys_by_ttl: BTreeMap::new(),
-            keys_by_touch: BTreeMap::new(),
-        }
+        Memcached { limit, ..Default::default() }
     }
 
-    pub fn delete(&mut self, key: &str) -> bool {
-        let item = match self.cache.remove(key) {
-            Some(item) => item,
-            None => return false,
-        };
+    pub fn delete(&mut self, key: &str) -> Option<Vec<u8>> {
+        let item = self.cache.remove(key)?;
 
         self.remove_from_touch(key, item.touch);
         self.remove_from_ttl(key, item.ttl);
         self.current_size -= item.data.len();
 
-        true
+        Some(item.data)
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let item = match self.cache.get(key) {
-            Some(item) => item,
-            None => return None,
-        };
+        let item = self.cache.get(key)?;
 
         if let Some(ttl) = item.ttl {
             if ttl < Instant::now() {
@@ -150,6 +139,6 @@ impl Memcached {
             None => return false,
         };
 
-        self.delete(&key)
+        self.delete(&key).is_some()
     }
 }
