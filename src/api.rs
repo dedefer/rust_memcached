@@ -13,20 +13,19 @@ use duration_string::DurationString;
 
 use crate::memcached::Memcached;
 
+impl Memcached {
+    pub fn service(self, gc_interval: Duration) -> impl (Fn() -> Scope) + Clone {
+        let mc = Arc::new(RwLock::new(self));
 
-pub fn memcached(memory_limit: usize, gc_interval: Duration) -> Scope {
-    let mc = Arc::new(RwLock::new(
-        Memcached::new(memory_limit)
-    ));
+        let mc_for_gc = mc.clone();
+        thread::spawn(move || gc(mc_for_gc, gc_interval));
 
-    let mc_for_gc = mc.clone();
-    thread::spawn(move || gc(mc_for_gc, gc_interval));
-
-    scope("/")
-        .app_data(Data::from(mc))
-        .service(get)
-        .service(set)
-        .service(delete)
+        move || scope("/")
+            .app_data(Data::from(mc.clone()))
+            .service(get)
+            .service(set)
+            .service(delete)
+    }
 }
 
 

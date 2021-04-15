@@ -9,6 +9,7 @@ pub struct Settings {
     pub memory_limit: u64,
     pub gc_interval: DurationString,
     pub addr: String,
+    pub workers: Option<u64>,
 }
 
 impl Settings {
