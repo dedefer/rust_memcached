@@ -17,10 +17,8 @@ use crate::settings::Settings;
 #[actix_web::main]
 async fn main() -> Result<()> {
     env_logger::init();
-    let Settings { memory_limit, gc_interval, addr } = match Settings::new() {
-        Ok(cfg) => cfg,
-        Err(err) => return Err(Error::new(InvalidInput, format!("{}", err))),
-    };
+    let Settings { memory_limit, gc_interval, addr } = Settings::new()
+        .map_err(|err| Error::new(InvalidInput, err))?;
 
     HttpServer::new(move ||
         App::new()

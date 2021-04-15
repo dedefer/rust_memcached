@@ -1,6 +1,5 @@
 use std::mem::take;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::time::{Instant, Duration};
 use log::debug;
 
@@ -15,8 +14,8 @@ pub struct Memcached {
     limit: usize,
     current_size: usize,
     cache: HashMap<String, Item>,
-    keys_by_ttl: BTreeMap<Instant, Vec<String>>,
-    keys_by_touch: BTreeMap<Instant, Vec<String>>,
+    keys_by_ttl: BTreeMap<Instant, Vec<&'static str>>,
+    keys_by_touch: BTreeMap<Instant, Vec<&'static str>>,
 }
 
 impl Memcached {
@@ -25,7 +24,7 @@ impl Memcached {
     }
 
     pub fn delete(&mut self, key: &str) -> Option<Vec<u8>> {
-        let item = self.cache.remove(key)?;
+        let (_key_owned, item) = self.cache.remove_entry(key)?;
 
         self.remove_from_touch(key, item.touch);
         self.remove_from_ttl(key, item.ttl);
@@ -54,7 +53,7 @@ impl Memcached {
         }
 
         while not_enough_space(self) && self.remove_oldest() {
-            debug!("oldest key displaced");
+            debug!("oldest key displaced: current size {}", self.current_size);
         }
 
         if not_enough_space(self) {
@@ -66,21 +65,24 @@ impl Memcached {
         let touch = Instant::now();
         let ttl = ttl.map(|ttl| touch + ttl);
 
-        self.cache.insert(key.to_owned(), Item {
+        let key_owned = key.to_owned();
+        let key = unsafe { as_str_unsafe(&key_owned) };
+
+        self.cache.insert(key_owned, Item {
             touch, ttl,
             data: value.to_owned(),
         });
 
         let mut new_keys_by_touch = self.keys_by_touch
             .remove(&touch).unwrap_or_else(|| Vec::with_capacity(1));
-        new_keys_by_touch.push(key.to_owned());
+        new_keys_by_touch.push(key);
         self.keys_by_touch.insert(touch, new_keys_by_touch);
 
 
         if let Some(ttl) = ttl {
             let mut new_keys_by_ttl = self.keys_by_ttl
                 .remove(&ttl).unwrap_or_else(|| Vec::with_capacity(1));
-            new_keys_by_ttl.push(key.to_owned());
+            new_keys_by_ttl.push(key);
             self.keys_by_ttl.insert(ttl, new_keys_by_ttl);
         }
 
@@ -91,15 +93,15 @@ impl Memcached {
 
     pub fn collect_garbage(&mut self) {
         let now = Instant::now();
-        let keys_sets: Vec<(Instant, Vec<String>)> = self.keys_by_ttl
+        let keys_sets: Vec<(Instant, Vec<&str>)> = self.keys_by_ttl
             .iter_mut()
             .take_while(|(&ttl, _)| ttl < now)
             .map(|(&ttl, v)| { (ttl, take(v)) })
             .collect();
 
         let mut memory_retrieved = self.current_size;
-        keys_sets.iter().for_each(|(ttl, keys)| keys.iter().for_each(|key| {
-            let item = self.cache.remove(key).unwrap();
+        keys_sets.iter().for_each(|(ttl, keys)| keys.iter().for_each(|&key| {
+            let (_key_owned, item) = self.cache.remove_entry(key).unwrap();
 
             self.remove_from_touch(key, item.touch);
             self.keys_by_ttl.remove(ttl);
@@ -118,7 +120,7 @@ impl Memcached {
     fn remove_from_ttl(&mut self, key: &str, ttl: Option<Instant>) {
         if let Some(ttl) = ttl {
             let mut keys = self.keys_by_ttl.remove(&ttl).unwrap();
-            keys.retain(|k| k != key);
+            keys.retain(|&k| k != key);
             if !keys.is_empty() {
                 self.keys_by_ttl.insert(ttl, keys);
             }
@@ -127,7 +129,7 @@ impl Memcached {
 
     fn remove_from_touch(&mut self, key: &str, touch: Instant) {
         let mut keys = self.keys_by_touch.remove(&touch).unwrap();
-        keys.retain(|k| k != key);
+        keys.retain(|&k| k != key);
         if !keys.is_empty() {
             self.keys_by_touch.insert(touch, keys);
         }
@@ -135,10 +137,118 @@ impl Memcached {
 
     fn remove_oldest(&mut self) -> bool {
         let key = match self.keys_by_touch.iter().next() {
-            Some((_, keys)) => keys[0].clone(),
+            Some((_, keys)) => keys.get(0).map(|&s| s)
+                .expect("empty vec in keys_by_touch (impossibre)"),
             None => return false,
         };
 
         self.delete(&key).is_some()
+    }
+}
+
+unsafe fn as_str_unsafe(s: &String) -> &'static str {
+    let ptr = s.as_bytes().as_ptr();
+    let bytes = std::slice::from_raw_parts(ptr, s.len());
+    std::str::from_utf8_unchecked(bytes)
+}
+
+
+#[cfg(test)]
+mod public_tests {
+    use super::*;
+
+    #[test]
+    fn set_get_ok() {
+        let mut mc = Memcached::new(300);
+        mc.set("a", "a".as_bytes(), None);
+        assert_eq!(mc.get("a"), Some("a".into()));
+    }
+
+    #[test]
+    fn get_none() {
+        let mc = Memcached::new(300);
+        assert_eq!(mc.get("b"), None);
+    }
+
+    #[test]
+    fn displace_oldest() {
+        let mut mc = Memcached::new(3);
+        mc.set("a", "a".as_bytes(), None);
+        mc.set("b", "a".as_bytes(), None);
+        mc.set("c", "a".as_bytes(), None);
+        mc.set("d", "a".as_bytes(), None);
+
+        assert_eq!(mc.get("a"), None);
+        assert_eq!(mc.get("b"), Some("a".into()));
+        assert_eq!(mc.get("c"), Some("a".into()));
+        assert_eq!(mc.get("d"), Some("a".into()));
+    }
+
+    #[test]
+    fn expire() {
+        let mut mc = Memcached::new(300);
+        mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
+        assert_eq!(mc.get("a"), Some("a".into()));
+
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert_eq!(mc.get("a"), None);
+    }
+
+    #[test]
+    fn overflow() {
+        let mut mc = Memcached::new(1);
+        mc.set("a", "aa".as_bytes(), None);
+        assert_eq!(mc.get("a"), None);
+    }
+}
+
+
+#[cfg(test)]
+mod inner_tests {
+    use super::*;
+
+    /// test validates that pointers to keys are equal in cache, keys_by_touch and keys_by_ttl
+    #[test]
+    fn valid_pointers() {
+        let mut mc = Memcached::new(300);
+        mc.set("a", "a".as_bytes(), Some(Duration::from_secs(300)));
+
+        let (key, v) = mc.cache.get_key_value("a").unwrap();
+        let key_ttl = mc.keys_by_ttl[&v.ttl.unwrap()][0];
+        let key_touch = mc.keys_by_touch[&v.touch][0];
+        assert_eq!(key.as_ptr(), key_ttl.as_ptr());
+        assert_eq!(key.as_ptr(), key_touch.as_ptr());
+    }
+
+    #[test]
+    fn expire_without_gc() {
+        let mut mc = Memcached::new(300);
+        mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
+        assert_eq!(mc.get("a"), Some("a".into()));
+
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert_eq!(mc.get("a"), None);
+        assert_eq!(mc.current_size, 1);
+        assert_eq!(mc.cache.len(), 1);
+        assert_eq!(mc.keys_by_ttl.len(), 1);
+        assert_eq!(mc.keys_by_touch.len(), 1);
+    }
+
+    #[test]
+    fn expire_with_gc() {
+        let mut mc = Memcached::new(300);
+        mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
+        assert_eq!(mc.get("a"), Some("a".into()));
+
+        std::thread::sleep(Duration::from_millis(200));
+        mc.collect_garbage();
+
+        assert_eq!(mc.get("a"), None);
+        assert_eq!(mc.current_size, 0);
+        assert_eq!(mc.cache.len(), 0);
+        assert_eq!(mc.keys_by_ttl.len(), 0);
+        assert_eq!(mc.keys_by_touch.len(), 0);
     }
 }

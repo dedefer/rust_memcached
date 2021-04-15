@@ -94,10 +94,7 @@ async fn delete(
 fn gc(mc: Arc<RwLock<Memcached>>, interval: Duration) {
     loop {
         thread::sleep(interval);
-        {
-            let mut mc = mc.write().unwrap();
-            mc.collect_garbage();
-        }
+        mc.write().unwrap().collect_garbage();
     }
 }
 
