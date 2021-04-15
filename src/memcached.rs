@@ -1,6 +1,9 @@
-use std::mem::take;
-use std::collections::{HashMap, BTreeMap};
-use std::time::{Instant, Duration};
+use std::{
+    slice, str, mem::take,
+    collections::{HashMap, BTreeMap},
+    time::{Instant, Duration},
+    thread::sleep,
+};
 use log::debug;
 
 struct Item {
@@ -146,10 +149,11 @@ impl Memcached {
     }
 }
 
+
 unsafe fn as_str_unsafe(s: &String) -> &'static str {
-    let ptr = s.as_bytes().as_ptr();
-    let bytes = std::slice::from_raw_parts(ptr, s.len());
-    std::str::from_utf8_unchecked(bytes)
+    str::from_utf8_unchecked(
+        slice::from_raw_parts(s.as_ptr(), s.len())
+    )
 }
 
 
@@ -190,7 +194,7 @@ mod public_tests {
         mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
         assert_eq!(mc.get("a"), Some("a".into()));
 
-        std::thread::sleep(Duration::from_millis(200));
+        sleep(Duration::from_millis(200));
 
         assert_eq!(mc.get("a"), None);
     }
@@ -227,7 +231,7 @@ mod inner_tests {
         mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
         assert_eq!(mc.get("a"), Some("a".into()));
 
-        std::thread::sleep(Duration::from_millis(200));
+        sleep(Duration::from_millis(200));
 
         assert_eq!(mc.get("a"), None);
         assert_eq!(mc.current_size, 1);
@@ -242,7 +246,7 @@ mod inner_tests {
         mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
         assert_eq!(mc.get("a"), Some("a".into()));
 
-        std::thread::sleep(Duration::from_millis(200));
+        sleep(Duration::from_millis(200));
         mc.collect_garbage();
 
         assert_eq!(mc.get("a"), None);

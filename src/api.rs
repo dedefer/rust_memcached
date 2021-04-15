@@ -1,12 +1,14 @@
-use std::thread;
 use serde::{Serialize, Deserialize};
 use actix_web::{
     post, HttpResponse as Code,
     Responder, Scope,
     web::{Data, scope, Json},
 };
-use std::sync::{RwLock, Arc};
-use std::time::Duration;
+use std::{
+    thread,
+    sync::{RwLock, Arc},
+    time::Duration,
+};
 use duration_string::DurationString;
 
 use crate::memcached::Memcached;
