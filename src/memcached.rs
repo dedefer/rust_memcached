@@ -1,8 +1,7 @@
 use std::{
     slice, str, mem::take,
     collections::{HashMap, BTreeMap},
-    time::{Instant, Duration},
-    thread::sleep,
+    time::{Instant, Duration}
 };
 use log::debug;
 
@@ -10,6 +9,12 @@ struct Item {
     touch: Instant,
     ttl: Option<Instant>,
     data: Vec<u8>,
+}
+
+pub struct SetError(String, Vec<u8>);
+
+impl SetError {
+    pub fn into_kv(self) -> (String, Vec<u8>) { (self.0, self.1) }
 }
 
 #[derive(Default)]
@@ -48,8 +53,8 @@ impl Memcached {
         Some(item.data.clone())
     }
 
-    pub fn set(&mut self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
-        let not_enough_space = |mc: &Self| (mc.current_size + value.len()) > mc.limit;
+    pub fn set(&mut self, key: String, data: Vec<u8>, ttl: Option<Duration>) -> Result<(), SetError> {
+        let not_enough_space = |mc: &Self| (mc.current_size + data.len()) > mc.limit;
 
         if not_enough_space(self) {
             self.collect_garbage()
@@ -60,21 +65,16 @@ impl Memcached {
         }
 
         if not_enough_space(self) {
-            return false
+            return Ok(())
         }
 
-        self.delete(key);
+        self.delete(&key);
 
         let touch = Instant::now();
         let ttl = ttl.map(|ttl| touch + ttl);
 
-        let key_owned = key.to_owned();
+        let key_owned = key;
         let key = unsafe { as_str_unsafe(&key_owned) };
-
-        self.cache.insert(key_owned, Item {
-            touch, ttl,
-            data: value.to_owned(),
-        });
 
         let mut new_keys_by_touch = self.keys_by_touch
             .remove(&touch).unwrap_or_else(|| Vec::with_capacity(1));
@@ -89,9 +89,11 @@ impl Memcached {
             self.keys_by_ttl.insert(ttl, new_keys_by_ttl);
         }
 
-        self.current_size += value.len();
+        self.current_size += data.len();
 
-        true
+        self.cache.insert(key_owned, Item { touch, ttl, data });
+
+        Ok(())
     }
 
     pub fn collect_garbage(&mut self) {
@@ -160,11 +162,12 @@ unsafe fn as_str_unsafe(s: &String) -> &'static str {
 #[cfg(test)]
 mod public_tests {
     use super::*;
+    use std::thread::sleep;
 
     #[test]
     fn set_get_ok() {
         let mut mc = Memcached::new(300);
-        mc.set("a", "a".as_bytes(), None);
+        let _ = mc.set("a".to_owned(), "a".as_bytes().to_owned(), None);
         assert_eq!(mc.get("a"), Some("a".into()));
     }
 
@@ -177,10 +180,10 @@ mod public_tests {
     #[test]
     fn displace_oldest() {
         let mut mc = Memcached::new(3);
-        mc.set("a", "a".as_bytes(), None);
-        mc.set("b", "a".as_bytes(), None);
-        mc.set("c", "a".as_bytes(), None);
-        mc.set("d", "a".as_bytes(), None);
+        let _ = mc.set("a".to_owned(), "a".as_bytes().to_owned(), None);
+        let _ = mc.set("b".to_owned(), "a".as_bytes().to_owned(), None);
+        let _ = mc.set("c".to_owned(), "a".as_bytes().to_owned(), None);
+        let _ = mc.set("d".to_owned(), "a".as_bytes().to_owned(), None);
 
         assert_eq!(mc.get("a"), None);
         assert_eq!(mc.get("b"), Some("a".into()));
@@ -191,7 +194,7 @@ mod public_tests {
     #[test]
     fn expire() {
         let mut mc = Memcached::new(300);
-        mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
+        let _ = mc.set("a".to_owned(), "a".as_bytes().to_owned(), Some(Duration::from_millis(100)));
         assert_eq!(mc.get("a"), Some("a".into()));
 
         sleep(Duration::from_millis(200));
@@ -202,7 +205,7 @@ mod public_tests {
     #[test]
     fn overflow() {
         let mut mc = Memcached::new(1);
-        mc.set("a", "aa".as_bytes(), None);
+        let _ = mc.set("a".to_owned(), "aa".as_bytes().to_owned(), None);
         assert_eq!(mc.get("a"), None);
     }
 }
@@ -211,12 +214,13 @@ mod public_tests {
 #[cfg(test)]
 mod inner_tests {
     use super::*;
+    use std::thread::sleep;
 
     /// test validates that pointers to keys are equal in cache, keys_by_touch and keys_by_ttl
     #[test]
     fn valid_pointers() {
         let mut mc = Memcached::new(300);
-        mc.set("a", "a".as_bytes(), Some(Duration::from_secs(300)));
+        let _ = mc.set("a".to_owned(), "a".as_bytes().to_owned(), Some(Duration::from_secs(300)));
 
         let (key, v) = mc.cache.get_key_value("a").unwrap();
         let key_ttl = mc.keys_by_ttl[&v.ttl.unwrap()][0];
@@ -228,7 +232,7 @@ mod inner_tests {
     #[test]
     fn expire_without_gc() {
         let mut mc = Memcached::new(300);
-        mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
+        let _ = mc.set("a".to_owned(), "a".as_bytes().to_owned(), Some(Duration::from_millis(100)));
         assert_eq!(mc.get("a"), Some("a".into()));
 
         sleep(Duration::from_millis(200));
@@ -243,7 +247,7 @@ mod inner_tests {
     #[test]
     fn expire_with_gc() {
         let mut mc = Memcached::new(300);
-        mc.set("a", "a".as_bytes(), Some(Duration::from_millis(100)));
+        let _ = mc.set("a".to_owned(), "a".as_bytes().to_owned(), Some(Duration::from_millis(100)));
         assert_eq!(mc.get("a"), Some("a".into()));
 
         sleep(Duration::from_millis(200));

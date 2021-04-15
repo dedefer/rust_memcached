@@ -63,12 +63,13 @@ async fn set(
     mc: Data<RwLock<Memcached>>,
     req: Json<SetReq>,
 ) -> impl Responder {
+    let SetReq { key, data, ttl } = req.0;
     match mc.write().unwrap().set(
-        &req.key, req.data.as_bytes(),
-        req.ttl.map(Into::into),
+        key, data.into_bytes(),
+        ttl.map(Into::into),
     ) {
-        true => Code::Ok(),
-        false => Code::NotModified(),
+        Ok(_) => Code::Ok(),
+        Err(_) => Code::NotModified(),
     }.finish()
 }
 
